@@ -5,11 +5,10 @@ use color_eyre::{
 use librespot_core::SessionConfig;
 use librespot_core::{authentication::Credentials, Session};
 use log::info;
-use tokio::runtime::Runtime;
 
 use crate::{config::CliConfig, setup_logger, LogTarget};
 
-pub(crate) fn run_oauth(mut cli_config: CliConfig, oauth_port: u16) -> eyre::Result<()> {
+pub(crate) async fn run_oauth(mut cli_config: CliConfig, oauth_port: u16) -> eyre::Result<()> {
     setup_logger(LogTarget::Terminal, cli_config.verbose)?;
 
     cli_config
@@ -55,21 +54,23 @@ pub(crate) fn run_oauth(mut cli_config: CliConfig, oauth_port: u16) -> eyre::Res
         ..Default::default()
     };
 
-    let token = librespot_oauth::get_access_token(
+    let token = librespot_oauth::OAuthClientBuilder::new(
         &session_config.client_id,
         &format!("http://127.0.0.1:{oauth_port}/login"),
         OAUTH_SCOPES.to_vec(),
     )
+    .build()?
+    // Corrected: Apply wrap_err *before* the final `?`
+    .get_access_token()
     .wrap_err("token retrieval failed")?;
 
     let creds = Credentials::with_access_token(token.access_token);
-
-    Runtime::new().unwrap().block_on(async move {
-        let session = Session::new(session_config, Some(cache));
-        session.connect(creds, true).await
-    })?;
+    
+    let session = Session::new(session_config, Some(cache));
+    session.connect(creds, true).await?;
 
     info!("\nLogin successful! You are now ready to run spotifyd.");
 
     Ok(())
 }
+

@@ -13,7 +13,6 @@ use oauth::run_oauth;
 use pledge::pledge;
 #[cfg(windows)]
 use std::fs;
-use tokio::runtime::Runtime;
 
 #[cfg(feature = "alsa_backend")]
 mod alsa_mixer;
@@ -102,9 +101,8 @@ fn setup_logger(log_target: LogTarget, verbose: u8) -> eyre::Result<()> {
     logger.apply().wrap_err("Couldn't initialize logger")
 }
 
-fn main() -> eyre::Result<()> {
-    // Start with superset of all potentially required promises.
-    // Drop later after CLI arguments and configuration files were parsed.
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
     #[cfg(target_os = "openbsd")]
     pledge(
         "stdio rpath wpath cpath inet mcast flock chown unix dns proc exec audio",
@@ -117,12 +115,12 @@ fn main() -> eyre::Result<()> {
     let cli_config = CliConfig::parse();
 
     match cli_config.mode {
-        None => run_daemon(cli_config),
-        Some(ExecutionMode::Authenticate { oauth_port }) => run_oauth(cli_config, oauth_port),
+        None => run_daemon(cli_config).await,
+        Some(ExecutionMode::Authenticate { oauth_port }) => run_oauth(cli_config, oauth_port).await,
     }
 }
 
-fn run_daemon(mut cli_config: CliConfig) -> eyre::Result<()> {
+async fn run_daemon(mut cli_config: CliConfig) -> eyre::Result<()> {
     let is_daemon = !cli_config.no_daemon;
 
     let log_target = if is_daemon {
@@ -156,7 +154,6 @@ fn run_daemon(mut cli_config: CliConfig) -> eyre::Result<()> {
         .wrap_err("could not load the config file")?;
     trace!("{:?}", &cli_config);
 
-    // Returns the old SpotifydConfig struct used within the rest of the daemon.
     let internal_config = config::get_internal_config(cli_config);
 
     if is_daemon {
@@ -195,23 +192,6 @@ fn run_daemon(mut cli_config: CliConfig) -> eyre::Result<()> {
 
     #[cfg(target_os = "openbsd")]
     {
-        // At this point:
-        //   * --username-cmd, --password-cmd were handled
-        //     > no "proc exec"
-        //   * --pid, daemon(3) were handled
-        //     > no "cpath flock chown" for PID file
-        //     > no "proc" for double-fork(2)
-        //
-        // Required runtime promises:
-        // stdout/err, syslog(3)    "stdio"
-        // ${TMPDIR}/.tmp*, cache   "[rwc]path"
-        // Spotify API/Connect      "inet dns"
-        // D-Bus, MPRIS             "unix"
-        // Zeroconf Discovery       "mcast"
-        // PortAudio, sio_open(3)  ("[rwc]path unix inet audio")
-        // > after sndio(7) cookie  "audio"
-
-        // --on-song-change-hook aka. "onevent", run via --shell aka. "shell"
         if internal_config.onevent.is_some() {
             pledge(
                 "stdio rpath wpath cpath inet mcast unix dns proc exec audio",
@@ -223,9 +203,6 @@ fn run_daemon(mut cli_config: CliConfig) -> eyre::Result<()> {
         }
     }
 
-    let runtime = Runtime::new().unwrap();
-    runtime.block_on(async {
-        let initial_state = setup::initial_state(internal_config)?;
-        initial_state.run().await
-    })
+    let initial_state = setup::initial_state(internal_config)?;
+    initial_state.run().await
 }
